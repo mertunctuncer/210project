@@ -1,5 +1,10 @@
 #include <Servo.h>
+#include <SoftwareSerial.h>
 
+void getSerialInput();
+void getBluetoothInput();
+
+void sendData();
 
 
 
@@ -11,13 +16,16 @@ const float MILLIS_TO_CM = 0.01723;
 float fetchDistance()
 {
   pinMode(TRIGGER_PIN, OUTPUT);
+  
   digitalWrite(TRIGGER_PIN, LOW);
   delayMicroseconds(2);
   digitalWrite(TRIGGER_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIGGER_PIN, LOW);
+  
   pinMode(ECHO_PIN, INPUT);
   return MILLIS_TO_CM * pulseIn(ECHO_PIN, HIGH);
+  
 }
 
 // BUZZER
@@ -76,36 +84,34 @@ void servoReset() {
   servo.write(angle);
 }
 
+// BLUETOOTH
+const int BLUETOOTH_TX_PIN = 9;
+const int BLUETOOTH_RX_PIN = 10;
+
+SoftwareSerial blSerial(BLUETOOTH_TX_PIN, BLUETOOTH_RX_PIN);
+
+
+
+
 // PROCESS INFO
 const float CLOSE = 15;
 const float MEDIUM = 30;
+
 void processDistance(float distance) {
+  
   if(distance < CLOSE) {
     setColor(RED_PIN);
     buzz(distance, MEDIUM);
+    
   } else if(distance < MEDIUM) {
     setColor(GREEN_PIN);
     buzz(distance, MEDIUM);
+    
   } else {
     setColor(BLUE_PIN);
     noTone(BUZZER_PIN);
   }
 }
-
-char * serialInput;
-char * bluetoothInput;
-
-//INPUT
-void getSerialInput() {
-  while(Serial.available() > 0) {
-    
-  }
-}
-void getBluetoothInput() {
-  
-}
-
-// OUTPUT
 
 
 
@@ -113,26 +119,106 @@ void getBluetoothInput() {
 void setup()
 {
   for(int pin : COLOR_PINS) pinMode(pin, OUTPUT);
+  
   pinMode(BUZZER_PIN, OUTPUT);
+  
   servo.attach(SERVO_PIN);
+  servoReset();
+  
   Serial.begin(9600);
+  blSerial.begin(9600);
 }
 
 
 // LOOP
 float cm = 0;
-int sonarActive = 1;
+
+int sonarActive = 0;
+int processingConnected = 0;
+int bluetoothConnected = 0;
 
 void loop()
 {
+
   getSerialInput();
   getBluetoothInput();
+  
   if(sonarActive) {
+    
     servoMoveNext();
     cm = fetchDistance();
+    processDistance(cm);
+    
+    if(processingConnected) sendProcessingData(angle, cm);
+    if(bluetoothConnected) sendBluetoothData(angle, cm);
+
+    delay(10);
+  }
+}
+
+// INPUT
+
+int serialInput;
+int bluetoothInput;
+
+
+int parseCommand(int input) {
+  switch(input) {
+    case 0:
+    	processingConnected = 1;
+    	break;
+    case 1:
+    	processingConnected = 0;
+    	break
+   	case 2:
+    	bluetoothConnected = 1;
+    	break;
+    case 3:
+    	bluetoothConnected = 0;
+    	break;
+    case 48: // START '0'
+    	sonarActive = 1;
+    	break;
+    case 49: // STOP '1'
+    	sonarActive = 0;
+    	servoReset();
+    	break;
+    case 50: // RESET '2'
+    	servoReset();
+    	break;
+    default:
+    	return 0;
+    	break;
   }
   
-  processDistance(cm);
-  
-  delay(10);
+  return 1;
+}
+
+
+void getSerialInput() {
+  while(Serial.available()) {
+    serialInput = Serial.read();
+    parseCommand(serialInput);
+  }
+}
+
+void getBluetoothInput() {
+  while(blSerial.available()) {
+    bluetoothInput = blSerial.read();
+    parseCommand(bluetoothInput);
+  }
+}
+
+// OUTPUT 
+void sendProcessingData(float currentAngle, float distance) {
+  Serial.print(currentAngle);
+  Serial.print(" ");
+  Serial.println(distance);
+}
+
+
+void sendBluetoothData(float currentAngle, float distance) {
+  blSerial.print(currentAngle);
+  blSerial.print(" ");
+  blSerial.println(distance);
 }
