@@ -1,18 +1,33 @@
 #include <Servo.h>
 #include <SoftwareSerial.h>
 
-void getSerialInput();
-void getBluetoothInput();
 
-void sendProcessingData(float, float);
-void sendBluetoothData(float, float);
+// << PINS >>
+// BUZZER
+const int BUZZER_PIN = 4;
 
+// SONAR
+const int TRIGGER_PIN = 9;
+const int ECHO_PIN = 8;
+
+// SERVO
+const int SERVO_PIN = 10;
+
+// LED
+const int GREEN_PIN = 6;
+const int BLUE_PIN = 5;
+const int RED_PIN = 7;
+
+// BLUETOOTH
+const int BLUETOOTH_TX_PIN = 0;
+const int BLUETOOTH_RX_PIN = 1;
+
+void broadcastData(float, float);
 
 
 // SONAR
-const int TRIGGER_PIN = 7;
-const int ECHO_PIN = TRIGGER_PIN;
 const float MILLIS_TO_CM = 0.01723;
+long duration;
 
 float fetchDistance()
 {
@@ -25,27 +40,22 @@ float fetchDistance()
     digitalWrite(TRIGGER_PIN, LOW);
 
     pinMode(ECHO_PIN, INPUT);
-    return MILLIS_TO_CM * pulseIn(ECHO_PIN, HIGH);
+    duration = pulseIn(ECHO_PIN, HIGH);
+    return duration * MILLIS_TO_CM;
 
 }
 
 // BUZZER
-const int BUZZER_PIN = 8;
-const float MAX_HZ = 10000;
-const float MIN_HZ = 1000;
-float hz;
 
+void buzz(const float distance) {
 
-void buzz(const float distance, const float maxDistance) {
-    hz =((distance * -1) * (MAX_HZ - MIN_HZ) / maxDistance) + MAX_HZ;
-    tone(BUZZER_PIN, hz);
+  if(distance < 5) tone(BUZZER_PIN, 6000);
+  else if(distance < 10) tone(BUZZER_PIN, 4000);
+  else if(distance < 15) tone(BUZZER_PIN, 2000);
 }
 
 
 // LED
-const int GREEN_PIN = 4;
-const int BLUE_PIN = 5;
-const int RED_PIN = 6;
 
 const int COLOR_PINS[3] = {BLUE_PIN, RED_PIN, GREEN_PIN};
 
@@ -62,10 +72,11 @@ void setColor(const int color) {
 }
 
 // SERVO
-const int SERVO_PIN = 3;
+
 Servo servo;
-const int MAX_ANGLE = 180;
-const int STEP = 1;
+const int MAX_ANGLE = 175;
+const int MIN_ANGLE = 5;
+const int STEP = 3;
 
 int angle = 0;
 int reverse = 0;
@@ -74,25 +85,21 @@ void servoMoveNext() {
     if(reverse)angle -= STEP;
     else angle += STEP;
 
-    if(angle > MAX_ANGLE) reverse = 1;
-    else if(angle < 0) reverse = 0;
+    if(angle >= MAX_ANGLE) reverse = 1;
+    else if(angle <= MIN_ANGLE) reverse = 0;
 
     servo.write(angle);
+}
+
+void servoSetAngle(int newAngle) {
+  angle = newAngle;
+  servo.write(angle);
 }
 
 void servoReset() {
-    angle = 0;
+    angle = MIN_ANGLE;
     servo.write(angle);
 }
-
-// BLUETOOTH
-const int BLUETOOTH_TX_PIN = 9;
-const int BLUETOOTH_RX_PIN = 10;
-
-SoftwareSerial blSerial(BLUETOOTH_TX_PIN, BLUETOOTH_RX_PIN);
-
-
-
 
 // PROCESS INFO
 const float CLOSE = 15;
@@ -102,11 +109,11 @@ void processDistance(const float distance) {
 
     if(distance < CLOSE) {
         setColor(RED_PIN);
-        buzz(distance, MEDIUM);
+        buzz(distance);
 
     } else if(distance < MEDIUM) {
         setColor(GREEN_PIN);
-        buzz(distance, MEDIUM);
+        buzz(distance);
 
     } else {
         setColor(BLUE_PIN);
@@ -114,9 +121,10 @@ void processDistance(const float distance) {
     }
 }
 
-
-
 // SETUP
+
+SoftwareSerial btSerial(0, 1);
+
 void setup()
 {
     for(int pin : COLOR_PINS) pinMode(pin, OUTPUT);
@@ -124,102 +132,151 @@ void setup()
     pinMode(BUZZER_PIN, OUTPUT);
 
     servo.attach(SERVO_PIN);
-    servoReset();
+    servoSetAngle(90);
 
     Serial.begin(9600);
-    blSerial.begin(9600);
+    btSerial.begin(9600);
 }
 
 
 // LOOP
-float cm = 0;
 
-int sonarActive = 0;
-int processingConnected = 0;
-int bluetoothConnected = 0;
+
+int sonarActive = 1;
+int autoTurn = 1;
+int manualControl = 0;
+
+float distanceCentis = 0;
 
 void loop()
 {
+  getInput();
+  if(autoTurn) {
+    servoMoveNext();
+  }
 
-    getSerialInput();
-    getBluetoothInput();
+  if(sonarActive) {
+    distanceCentis = fetchDistance();
+    broadcastData(angle, distanceCentis);
+    processDistance(distanceCentis);
+  }
 
-    if(sonarActive) {
-
-        servoMoveNext();
-        cm = fetchDistance();
-        processDistance(cm);
-
-        if(processingConnected) sendProcessingData(angle, cm);
-        if(bluetoothConnected) sendBluetoothData(angle, cm);
-
-        delay(10);
-    }
+  delay(150);
+  
 }
 
 // INPUT
+char input;
 
-int serialInput;
-int bluetoothInput;
+int parseCommand(byte * buffer, int lastIndex) {
+  Serial.print("m#Received message: ");
+  input = buffer[0];
+  Serial.print(input);
+  input = buffer[1];
+  Serial.println(input);
+  switch(buffer[0]) {
+    case 'a': // Auto on - off
+      if(buffer[1] == '1') {
+        Serial.println("m#Auto rotate mode on!");
+        manualControl = 0;
+        autoTurn = 1;
+      } else {
+        Serial.println("m#Auto rotate mode off!");
+        autoTurn = 0;
+      }
+      break;
+    case 'r': // Reset to 0
+      servoReset();
+      break;
+    case 's': // Sonar on - off
+      if(buffer[1] == '1') {
+        Serial.println("m#Sonar turned on!");
+        sonarActive = 1;
+      } else {
+        Serial.println("m#Sonar turned off!");
+        sonarActive = 0;
+      }
+      break;
+    case 'c': // Manual control mode
+      if(buffer[1] == '1') {
+        Serial.println("m#Manual control turned on!");
+        autoTurn = 0;
+        manualControl = 1;
+      } else {
+        Serial.println("m#Manual control turned off!");
+        manualControl = 0;
+      }
+      break;
+    case 'm': // Set angle
+      if(manualControl != 1) {
+        Serial.println("m#Manual control is not enabled!");
+        return;
+      }
 
-
-int parseCommand(const int input) {
-    switch(input) {
-        case 0:
-            processingConnected = 1;
-            break;
-        case 1:
-            processingConnected = 0;
-            break
-        case 2:
-            bluetoothConnected = 1;
-            break;
-        case 3:
-            bluetoothConnected = 0;
-            break;
-        case 48: // START '0'
-            sonarActive = 1;
-            break;
-        case 49: // STOP '1'
-            sonarActive = 0;
-            servoReset();
-            break;
-        case 50: // RESET '2'
-            servoReset();
-            break;
-        default:
-            return 0;
-            break;
-    }
-
-    return 1;
+      servoSetAngle(buffer[1]);
+      break;
+  }
 }
 
 
-void getSerialInput() {
+int badInput = 0;
+int index = 0;
+byte buffer[2] = {};
+
+
+void cleanBuffer(char * buffer) {
+  for(int i = 0; i < 2; i++) {
+    buffer[i] = NULL;
+  }
+}
+
+void getInput() {
+  while(btSerial.available()) {
+    if(index == 2) {
+      badInput = 1;
+        index = 0;
+      }
+
+        input = btSerial.read();
+        Serial.print("got:");
+        Serial.print(input);
+
+        if(input == '\n') {
+          if(!badInput) parseCommand(buffer, index);
+
+          cleanBuffer(buffer);
+          badInput = 0;
+          index = 0;
+        } else {
+          buffer[index] = input;
+          index++;
+        }
+  }
+
     while(Serial.available()) {
-        serialInput = Serial.read();
-        parseCommand(serialInput);
+        if(index == 2) {
+          badInput = 1;
+          index = 0;
+        }
+
+        input = Serial.read();
+
+        if(input == '\n') {
+          if(!badInput) parseCommand(buffer, index);
+
+          cleanBuffer(buffer);
+          badInput = 0;
+          index = 0;
+        } else {
+          buffer[index] = input;
+          index++;
+        }
     }
 }
 
-void getBluetoothInput() {
-    while(blSerial.available()) {
-        bluetoothInput = blSerial.read();
-        parseCommand(bluetoothInput);
-    }
-}
-
-// OUTPUT 
-void sendProcessingData(const float currentAngle, const float distance) {
-    Serial.print(currentAngle);
-    Serial.print(" ");
-    Serial.println(distance);
-}
-
-
-void sendBluetoothData(const float currentAngle, const float distance) {
-    blSerial.print(currentAngle);
-    blSerial.print(" ");
-    blSerial.println(distance);
+void broadcastData(const float angle, const float distanceCms) {
+  Serial.print("d#");
+  Serial.print(angle);
+  Serial.print(" ");
+  Serial.println(distanceCms);
 }
